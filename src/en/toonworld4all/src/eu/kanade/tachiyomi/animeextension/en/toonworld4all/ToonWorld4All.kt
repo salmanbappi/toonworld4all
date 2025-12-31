@@ -6,8 +6,10 @@ import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
+import eu.kanade.tachiyomi.lib.cloudflareinterceptor.CloudflareInterceptor
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.util.asJsoup
+import kotlinx.coroutines.async
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -17,6 +19,8 @@ import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.nodes.Document
 import uy.kohesive.injekt.injectLazy
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 
 @OptIn(ExperimentalSerializationApi::class)
 class ToonWorld4All : AnimeHttpSource() {
@@ -28,6 +32,10 @@ class ToonWorld4All : AnimeHttpSource() {
     override val lang = "en"
 
     override val supportsLatest = true
+
+    override val client: OkHttpClient = super.client.newBuilder()
+        .addInterceptor(CloudflareInterceptor(super.client))
+        .build()
 
     private val json: Json by injectLazy()
 
@@ -50,12 +58,10 @@ class ToonWorld4All : AnimeHttpSource() {
             }
         }
         
+        val current = document.select("nav.herald-pagination span.current").text().toIntOrNull() ?: 1
         val hasNextPage = document.select("nav.herald-pagination a.next").isNotEmpty() ||
             document.select("nav.herald-pagination a.page-numbers").any { 
-                it.text().toIntOrNull()?.let { page -> 
-                    val current = document.select("nav.herald-pagination span.current").text().toIntOrNull() ?: 1
-                    page > current
-                } ?: false
+                it.text().toIntOrNull()?.let { page -> page > current } ?: false
             }
         
         return AnimesPage(animeList, hasNextPage)
@@ -92,12 +98,9 @@ class ToonWorld4All : AnimeHttpSource() {
         document.select("a[href*='archive.toonworld4all.me']").forEach { element ->
             val ep = SEpisode.create().apply {
                 url = element.attr("href")
-                name = element.parent().previousElementSibling()?.text() ?: element.text()
-                if (name.contains("Watch/Download", ignoreCase = true)) {
-                    // Try to find a better name from the accordion or heading
-                    name = element.closest(".mks_accordion_item")?.select(".mks_accordion_heading")?.text() 
-                        ?: element.text()
-                }
+                name = element.closest(".mks_accordion_item")?.select(".mks_accordion_heading")?.text() 
+                    ?: element.parent().previousElementSibling()?.text() 
+                    ?: element.text()
             }
             episodes.add(ep)
         }
@@ -105,43 +108,47 @@ class ToonWorld4All : AnimeHttpSource() {
         return episodes.reversed()
     }
 
-    // Video Links (The "Hard" Part)
-    override suspend fun getVideoList(episode: SEpisode): List<Video> {
+    // Video Links (Optimized)
+    override suspend fun getVideoList(episode: SEpisode): List<Video> = coroutineScope {
         val response = client.newCall(GET(episode.url, headers)).execute()
         val document = response.asJsoup()
         
-        val propsJson = document.select("script").html()
-            .substringAfter("window.__PROPS__ = ")
-            .substringBefore(";")
+        val scriptContent = document.select("script").html()
+        val propsJson = scriptContent.substringAfter("window.__PROPS__ = ", "")
+            .substringBefore(";", "")
         
-        if (propsJson.isEmpty()) return emptyList()
+        if (propsJson.isEmpty()) return@coroutineScope emptyList()
         
-        val props = json.decodeFromString<EpisodeProps>(propsJson)
-        val videos = mutableListOf<Video>()
-        
-        props.data.data.encodes.forEach { encode ->
-            encode.files.forEach { file ->
-                val redirectUrl = if (file.link.startsWith("/")) "$archiveUrl${file.link}" else file.link
-                
-                // Get the final link from the redirect page
-                val finalLink = fetchFinalLink(redirectUrl)
-                if (finalLink != null) {
-                    val quality = "${encode.resolution} - ${file.host}"
-                    // Here we would ideally use an extractor, but for now we just return the host link
-                    // In a real extension, we would use: HubCloudExtractor(client).videoFromUrl(finalLink)
-                    videos.add(Video(finalLink, quality, finalLink, headers))
+        val props = try {
+            json.decodeFromString<EpisodeProps>(propsJson)
+        } catch (e: Exception) {
+            return@coroutineScope emptyList()
+        }
+
+        val videos = props.data.data.encodes.flatMap { encode ->
+            encode.files.map { file ->
+                async {
+                    val redirectUrl = if (file.link.startsWith("/")) "$archiveUrl${file.link}" else file.link
+                    val finalLink = fetchFinalLink(redirectUrl)
+                    if (finalLink != null) {
+                        val quality = "${encode.resolution} - ${file.host}"
+                        Video(finalLink, quality, finalLink, headers)
+                    } else null
                 }
             }
-        }
+        }.awaitAll().filterNotNull()
         
-        return videos
+        videos
     }
 
     private fun fetchFinalLink(url: String): String? {
         return try {
             val response = client.newCall(GET(url, headers)).execute()
             val html = response.body.string()
-            val propsJson = html.substringAfter("window.__PROPS__ = ").substringBefore(";")
+            val propsJson = html.substringAfter("window.__PROPS__ = ", "")
+                .substringBefore(";", "")
+            if (propsJson.isEmpty()) return null
+            
             val props = json.decodeFromString<RedirectProps>(propsJson)
             val finalLink = "${props.link.domain}${props.link.hidden}"
             response.close()
