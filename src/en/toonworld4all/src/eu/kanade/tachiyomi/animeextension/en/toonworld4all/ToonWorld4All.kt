@@ -8,6 +8,7 @@ import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.util.asJsoup
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import okhttp3.Headers
@@ -17,6 +18,7 @@ import okhttp3.Response
 import org.jsoup.nodes.Document
 import uy.kohesive.injekt.injectLazy
 
+@OptIn(ExperimentalSerializationApi::class)
 class ToonWorld4All : AnimeHttpSource() {
 
     override val name = "ToonWorld4All"
