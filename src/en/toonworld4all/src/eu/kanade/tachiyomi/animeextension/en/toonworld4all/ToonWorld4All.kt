@@ -10,6 +10,9 @@ import eu.kanade.tachiyomi.lib.cloudflareinterceptor.CloudflareInterceptor
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.util.asJsoup
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -19,8 +22,7 @@ import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.nodes.Document
 import uy.kohesive.injekt.injectLazy
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
+import java.util.concurrent.TimeUnit
 
 @OptIn(ExperimentalSerializationApi::class)
 class ToonWorld4All : AnimeHttpSource() {
@@ -34,6 +36,8 @@ class ToonWorld4All : AnimeHttpSource() {
     override val supportsLatest = true
 
     override val client: OkHttpClient = super.client.newBuilder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
         .addInterceptor(CloudflareInterceptor(super.client))
         .build()
 
@@ -128,12 +132,32 @@ class ToonWorld4All : AnimeHttpSource() {
         val videos = props.data.data.encodes.flatMap { encode ->
             encode.files.map { file ->
                 async {
-                    val redirectUrl = if (file.link.startsWith("/")) "$archiveUrl${file.link}" else file.link
-                    val finalLink = fetchFinalLink(redirectUrl)
-                    if (finalLink != null) {
-                        val quality = "${encode.resolution} - ${file.host}"
-                        Video(finalLink, quality, finalLink, headers)
-                    } else null
+                    withTimeoutOrNull(15000) {
+                        val redirectUrl = if (file.link.startsWith("/")) "$archiveUrl${file.link}" else file.link
+                        val finalLink = fetchFinalLink(redirectUrl)
+                        if (finalLink != null) {
+                            val quality = "${encode.resolution} - ${file.host}"
+                            // Basic extraction for known hosts
+                            if (finalLink.contains("hubcloud") || finalLink.contains("gdflix")) {
+                                try {
+                                    val videoRes = client.newCall(GET(finalLink, headers)).execute()
+                                    val videoHtml = videoRes.body.string()
+                                    val streamUrl = Regex("""href="(https?://[^"]+tok=[^"]+)"""").find(videoHtml)?.groupValues?.get(1)
+                                        ?: Regex(""""(https?://[^"]+/download/[^"]+)"""").find(videoHtml)?.groupValues?.get(1)
+                                    
+                                    if (streamUrl != null) {
+                                        Video(streamUrl, quality, streamUrl, headers)
+                                    } else {
+                                        Video(finalLink, "$quality (External)", finalLink, headers)
+                                    }
+                                } catch (e: Exception) {
+                                    Video(finalLink, "$quality (External)", finalLink, headers)
+                                }
+                            } else {
+                                Video(finalLink, "$quality (External)", finalLink, headers)
+                            }
+                        } else null
+                    }
                 }
             }
         }.awaitAll().filterNotNull()
