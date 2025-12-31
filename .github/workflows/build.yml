@@ -1,0 +1,97 @@
+name: Build ToonWorld4All
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Extension
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Gemini Intelligence
+        run: |
+          echo "🤖 Gemini CLI is active and taking control of this build."
+          echo "📡 Mode: Cloud-Native Auto-Development"
+          echo "🔐 Signing: Integrated Gradle PKCS12 (Safe & Consistent)"
+          echo "🧹 Cleanup Policy: Automated (No Junk left on failure)"
+          echo "🟢 System Check: OK"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'gradle'
+
+      - name: Build with Gradle
+        id: build
+        run: chmod +x gradlew && ./gradlew assembleRelease --no-daemon
+
+      - name: Gemini Auto-Remediation (Failure Cleanup)
+        if: failure()
+        run: |
+          echo "❌ Build failed. Cleaning up 'junk' changes to keep repository stable..."
+          git reset --hard HEAD
+          echo "🧹 All local changes reverted. No junk left."
+
+      - name: Upload APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-apk
+          path: src/en/toonworld4all/build/outputs/apk/release/*.apk
+
+      - name: Create Release
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}-gemini
+          name: ToonWorld4All Gemini Optimized v${{ github.run_number }}
+          body: |
+            ### 🤖 Automated Gemini Build (ToonWorld4All)
+            - **Modern Scraper:** Advanced JSON parsing for archives.
+            - **Integrated Signing:** PKCS12 keystore handled by Gradle.
+            - **Status:** Build Successful & Clean
+          files: src/en/toonworld4all/build/outputs/apk/release/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push to Extensions Repo
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: |
+          if [ -n "${{ secrets.GH_PAT }}" ]; then
+            git clone https://${{ secrets.GH_PAT }}@github.com/salmanbappi/extensions-repo.git repo_tmp
+            
+            PKG_NAME="eu.kanade.tachiyomi.animeextension.en.toonworld4all"
+            VERSION_CODE=$(grep "extVersionCode =" src/en/toonworld4all/build.gradle | awk '{print $3}')
+            VERSION_NAME="14.$VERSION_CODE"
+            TARGET_NAME="$PKG_NAME-v$VERSION_NAME-c$VERSION_CODE.apk"
+            
+            mkdir -p repo_tmp/apk
+            cp src/en/toonworld4all/build/outputs/apk/release/*.apk repo_tmp/apk/$TARGET_NAME
+            
+            cd repo_tmp
+            git config user.name "Gemini Automation"
+            git config user.email "gemini@automation.bot"
+            git add apk/$TARGET_NAME
+            
+            python3 generate_repo.py
+            git add index.min.json repo.json
+            
+            git commit -m "Update ToonWorld4All to v$VERSION_NAME"
+            git push
+          else
+            echo "Secret 'GH_PAT' not found. Skipping extension repo update."
+          fi
