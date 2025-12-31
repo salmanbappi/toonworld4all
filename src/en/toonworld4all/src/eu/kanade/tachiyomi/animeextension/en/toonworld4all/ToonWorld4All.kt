@@ -136,6 +136,8 @@ class ToonWorld4All : AnimeHttpSource() {
         return episodes.reversed()
     }
 
+import kotlinx.coroutines.withTimeout
+
     // Video Links (Optimized)
     override suspend fun getVideoList(episode: SEpisode): List<Video> = coroutineScope {
         val response = client.newCall(GET(episode.url, headers)).execute()
@@ -157,45 +159,51 @@ class ToonWorld4All : AnimeHttpSource() {
             encode.files.map { file ->
                 async {
                     semaphore.withPermit {
-                        withTimeoutOrNull(10000) {
-                            val redirectUrl = if (file.link.startsWith("/")) "$archiveUrl${file.link}" else file.link
-                            val finalLink = fetchFinalLink(redirectUrl)
-                            val quality = "${encode.resolution} - ${file.host}"
-                            
-                            if (finalLink != null) {
-                                // Attempt direct extraction for known easy targets
-                                if (finalLink.contains("hubcloud") || finalLink.contains("gdflix")) {
-                                    try {
-                                        val videoHeaders = headers.newBuilder()
-                                            .set("Referer", archiveUrl)
-                                            .build()
-                                        val videoRes = client.newCall(GET(finalLink, videoHeaders)).execute()
-                                        val videoHtml = videoRes.body.string()
-                                        val streamUrl = Regex("""href="(https?://[^"]+tok=[^"]+)"""").find(videoHtml)?.groupValues?.get(1)
-                                            ?: Regex(""""(https?://[^"]+/download/[^"]+)"""").find(videoHtml)?.groupValues?.get(1)
-                                        
-                                        if (streamUrl != null) {
-                                            Video(streamUrl, quality, streamUrl, headers)
-                                        } else {
-                                            Video(finalLink, "$quality (Host Page)", finalLink, headers)
-                                        }
-                                    } catch (e: Exception) {
+                        val redirectUrl = if (file.link.startsWith("/")) "$archiveUrl${file.link}" else file.link
+                        val quality = "${encode.resolution} - ${file.host}"
+                        
+                        val finalLink = try {
+                            withTimeout(10000) { fetchFinalLink(redirectUrl) }
+                        } catch (e: Exception) {
+                            null
+                        }
+                        
+                        if (finalLink != null) {
+                            // Attempt direct extraction for known easy targets
+                            if (finalLink.contains("hubcloud") || finalLink.contains("gdflix")) {
+                                try {
+                                    val videoHeaders = headers.newBuilder()
+                                        .set("Referer", archiveUrl)
+                                        .build()
+                                    val videoRes = client.newCall(GET(finalLink, videoHeaders)).execute()
+                                    val videoHtml = videoRes.body.string()
+                                    val streamUrl = Regex("""href="(https?://[^"]+tok=[^"]+)"""").find(videoHtml)?.groupValues?.get(1)
+                                        ?: Regex(""""(https?://[^"]+/download/[^"]+)"""").find(videoHtml)?.groupValues?.get(1)
+                                    
+                                    if (streamUrl != null) {
+                                        Video(streamUrl, quality, streamUrl, headers)
+                                    } else {
                                         Video(finalLink, "$quality (Host Page)", finalLink, headers)
                                     }
-                                } else {
-                                    Video(finalLink, quality, finalLink, headers)
+                                } catch (e: Exception) {
+                                    Video(finalLink, "$quality (Host Page)", finalLink, headers)
                                 }
                             } else {
-                                // Fallback to the redirect URL itself if final link resolution fails
-                                Video(redirectUrl, "$quality (Fast Stream)", redirectUrl, headers)
+                                Video(finalLink, quality, finalLink, headers)
                             }
+                        } else {
+                            // Fast Stream Fallback
+                            Video(redirectUrl, "$quality (Fast Stream)", redirectUrl, headers)
                         }
                     }
                 }
             }
         }.awaitAll().filterNotNull()
         
-        videos.sortedByDescending { it.quality.contains("1080") || it.quality.contains("720") }
+        videos.sortedWith(compareByDescending<Video> { it.quality.contains("1080") }
+            .thenByDescending { it.quality.contains("720") }
+            .thenBy { it.quality.contains("Fast Stream") }
+        )
     }
 
     private fun fetchFinalLink(url: String): String? {
