@@ -47,8 +47,14 @@ class ToonWorld4All : AnimeHttpSource() {
                 thumbnail_url = element.select("img.wp-post-image").attr("src")
             }
         }
-        val hasNextPage = document.select("div.herald-pagination a.next").isNotEmpty()
-        return AnimesPage(animeList, hasNextPage)
+        val hasNextPage = document.select("nav.herald-pagination a.page-numbers").any { it.text().contains("Next", ignoreCase = true) || it.hasClass("next") }
+            || document.select("nav.herald-pagination a.page-numbers").isNotEmpty() && !document.select("nav.herald-pagination span.current").last()?.text()?.equals(document.select("nav.herald-pagination a.page-numbers").last()?.text())!!
+        
+        // Simpler check: if there is an 'a' with page number higher than current
+        val current = document.select("nav.herald-pagination span.current").text().toIntOrNull() ?: 1
+        val lastPage = document.select("nav.herald-pagination a.page-numbers").mapNotNull { it.text().toIntOrNull() }.maxOrNull() ?: 1
+        
+        return AnimesPage(animeList, current < lastPage || document.select("nav.herald-pagination a.next").isNotEmpty())
     }
 
     // Latest Updates

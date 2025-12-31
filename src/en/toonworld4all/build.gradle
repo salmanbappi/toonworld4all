@@ -6,12 +6,16 @@ ext {
     author = 'salmanbappi'
     extClass = '.ToonWorld4All'
     baseUrl = 'https://toonworld4all.me'
-    extVersionCode = 1001
+    extVersionCode = 1002
 }
 
 repositories {
     google()
     mavenCentral()
+}
+
+dependencies {
+    implementation(libs.kotlin.json)
 }
 
 apply from: "$rootDir/common.gradle"
