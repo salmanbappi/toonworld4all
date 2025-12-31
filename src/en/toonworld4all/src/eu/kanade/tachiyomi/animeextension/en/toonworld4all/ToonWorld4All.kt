@@ -26,7 +26,10 @@ import java.util.concurrent.TimeUnit
 
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import okhttp3.Cookie
+import okhttp3.CookieJar
 import okhttp3.Dispatcher
+import okhttp3.HttpUrl
 
 @OptIn(ExperimentalSerializationApi::class)
 class ToonWorld4All : AnimeHttpSource() {
@@ -42,10 +45,19 @@ class ToonWorld4All : AnimeHttpSource() {
     override val client: OkHttpClient = super.client.newBuilder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
+        .cookieJar(
+            object : CookieJar {
+                private val cookieMap = mutableMapOf<String, List<Cookie>>()
+                override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+                    cookieMap[url.host] = cookies
+                }
+                override fun loadForRequest(url: HttpUrl): List<Cookie> = cookieMap[url.host] ?: emptyList()
+            }
+        )
         .dispatcher(
             Dispatcher().apply {
                 maxRequests = 100
-                maxRequestsPerHost = 15
+                maxRequestsPerHost = 20
             }
         )
         .addInterceptor(CloudflareInterceptor(super.client))
@@ -55,7 +67,7 @@ class ToonWorld4All : AnimeHttpSource() {
 
     private val archiveUrl = "https://archive.toonworld4all.me"
 
-    private val semaphore = Semaphore(5)
+    private val semaphore = Semaphore(10)
 
     override fun headersBuilder() = super.headersBuilder()
         .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
@@ -145,15 +157,19 @@ class ToonWorld4All : AnimeHttpSource() {
             encode.files.map { file ->
                 async {
                     semaphore.withPermit {
-                        withTimeoutOrNull(15000) {
+                        withTimeoutOrNull(10000) {
                             val redirectUrl = if (file.link.startsWith("/")) "$archiveUrl${file.link}" else file.link
                             val finalLink = fetchFinalLink(redirectUrl)
+                            val quality = "${encode.resolution} - ${file.host}"
+                            
                             if (finalLink != null) {
-                                val quality = "${encode.resolution} - ${file.host}"
-                                // Basic extraction for known hosts
+                                // Attempt direct extraction for known easy targets
                                 if (finalLink.contains("hubcloud") || finalLink.contains("gdflix")) {
                                     try {
-                                        val videoRes = client.newCall(GET(finalLink, headers)).execute()
+                                        val videoHeaders = headers.newBuilder()
+                                            .set("Referer", archiveUrl)
+                                            .build()
+                                        val videoRes = client.newCall(GET(finalLink, videoHeaders)).execute()
                                         val videoHtml = videoRes.body.string()
                                         val streamUrl = Regex("""href="(https?://[^"]+tok=[^"]+)"""").find(videoHtml)?.groupValues?.get(1)
                                             ?: Regex(""""(https?://[^"]+/download/[^"]+)"""").find(videoHtml)?.groupValues?.get(1)
@@ -161,27 +177,35 @@ class ToonWorld4All : AnimeHttpSource() {
                                         if (streamUrl != null) {
                                             Video(streamUrl, quality, streamUrl, headers)
                                         } else {
-                                            Video(finalLink, "$quality (External)", finalLink, headers)
+                                            Video(finalLink, "$quality (Host Page)", finalLink, headers)
                                         }
                                     } catch (e: Exception) {
-                                        Video(finalLink, "$quality (External)", finalLink, headers)
+                                        Video(finalLink, "$quality (Host Page)", finalLink, headers)
                                     }
                                 } else {
                                     Video(finalLink, quality, finalLink, headers)
                                 }
-                            } else null
+                            } else {
+                                // Fallback to the redirect URL itself if final link resolution fails
+                                Video(redirectUrl, "$quality (Fast Stream)", redirectUrl, headers)
+                            }
                         }
                     }
                 }
             }
         }.awaitAll().filterNotNull()
         
-        videos.sortedByDescending { it.quality.contains("1080") }
+        videos.sortedByDescending { it.quality.contains("1080") || it.quality.contains("720") }
     }
 
     private fun fetchFinalLink(url: String): String? {
         return try {
-            val response = client.newCall(GET(url, headers)).execute()
+            val req = Request.Builder()
+                .url(url)
+                .headers(headers)
+                .header("Referer", archiveUrl)
+                .build()
+            val response = client.newCall(req).execute()
             val html = response.body.string()
             val propsJson = html.substringAfter("window.__PROPS__ = ", "")
                 .substringBefore(";", "")
