@@ -1,0 +1,12 @@
+ext {
+    extName = 'ToonWorld4All'
+    pkgNameSuffix = 'en.toonworld4all'
+    applicationId = 'eu.kanade.tachiyomi.animeextension.en.toonworld4all'
+    namespace = 'eu.kanade.tachiyomi.animeextension.en.toonworld4all'
+    author = 'salmanbappi'
+    extClass = '.ToonWorld4All'
+    baseUrl = 'https://toonworld4all.me'
+    extVersionCode = 1001
+}
+
+apply from: "$rootDir/common.gradle"
