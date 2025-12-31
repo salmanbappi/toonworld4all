@@ -9,4 +9,9 @@ ext {
     extVersionCode = 1001
 }
 
+repositories {
+    google()
+    mavenCentral()
+}
+
 apply from: "$rootDir/common.gradle"

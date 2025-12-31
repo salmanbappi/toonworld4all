@@ -4,6 +4,11 @@ plugins {
     id("kotlinx-serialization")
 }
 
+repositories {
+    google()
+    mavenCentral()
+}
+
 android {
     compileSdk = AndroidConfig.compileSdk
 
