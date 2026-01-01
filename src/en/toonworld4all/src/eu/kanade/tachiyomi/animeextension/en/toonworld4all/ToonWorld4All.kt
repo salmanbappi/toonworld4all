@@ -9,6 +9,12 @@ import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.lib.cloudflareinterceptor.CloudflareInterceptor
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.util.asJsoup
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -19,6 +25,7 @@ import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
+import org.jsoup.nodes.Document
 import uy.kohesive.injekt.injectLazy
 import java.util.concurrent.TimeUnit
 
@@ -36,12 +43,29 @@ class ToonWorld4All : AnimeHttpSource() {
     override val client: OkHttpClient = super.client.newBuilder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
+        .cookieJar(
+            object : CookieJar {
+                private val cookieMap = mutableMapOf<String, List<Cookie>>()
+                override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+                    cookieMap[url.host] = cookies
+                }
+                override fun loadForRequest(url: HttpUrl): List<Cookie> = cookieMap[url.host] ?: emptyList()
+            }
+        )
+        .dispatcher(
+            Dispatcher().apply {
+                maxRequests = 50
+                maxRequestsPerHost = 10
+            }
+        )
         .addInterceptor(CloudflareInterceptor(super.client))
         .build()
 
     private val json: Json by injectLazy()
 
     private val archiveUrl = "https://archive.toonworld4all.me"
+
+    private val semaphore = Semaphore(3)
 
     override fun headersBuilder() = super.headersBuilder()
         .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
@@ -109,8 +133,8 @@ class ToonWorld4All : AnimeHttpSource() {
         return episodes.reversed()
     }
 
-    // Video Links (Direct Redirect strategy)
-    override suspend fun getVideoList(episode: SEpisode): List<Video> {
+    // Video Links (Hybrid Strategy)
+    override suspend fun getVideoList(episode: SEpisode): List<Video> = coroutineScope {
         val response = client.newCall(GET(episode.url, headers)).execute()
         val document = response.asJsoup()
         
@@ -118,28 +142,80 @@ class ToonWorld4All : AnimeHttpSource() {
         val propsJson = scriptContent.substringAfter("window.__PROPS__ = ", "")
             .substringBefore(";", "")
         
-        if (propsJson.isEmpty()) return emptyList()
+        if (propsJson.isEmpty()) return@coroutineScope emptyList()
         
         val props = try {
             json.decodeFromString<EpisodeProps>(propsJson)
         } catch (e: Exception) {
-            return emptyList()
+            return@coroutineScope emptyList()
         }
 
         val videos = props.data.data.encodes.flatMap { encode ->
-            encode.files.map { file ->
-                val redirectUrl = if (file.link.startsWith("/")) "$archiveUrl${file.link}" else file.link
-                val quality = "${encode.resolution} - ${file.host}"
-                // We return the redirect URL directly. 
-                // Aniyomi will try to play it, failing which the user can use 'Open in Webview'
-                // This is the only stable way for ToonWorld4All's current protection.
-                Video(redirectUrl, quality, redirectUrl, headers)
+            // For each resolution, we try to resolve only the first link to save time
+            // The others are returned as portal links
+            encode.files.mapIndexed { index, file ->
+                async {
+                    val redirectUrl = if (file.link.startsWith("/")) "$archiveUrl${file.link}" else file.link
+                    val quality = "${encode.resolution} - ${file.host}"
+                    
+                    // Only attempt background resolution for the first 2 links total to keep loading fast
+                    if (index == 0) {
+                        semaphore.withPermit {
+                            val finalLink = withTimeoutOrNull(7000) { fetchFinalLink(redirectUrl) }
+                            if (finalLink != null) {
+                                // Basic extraction for known easy targets
+                                if (finalLink.contains("hubcloud") || finalLink.contains("gdflix")) {
+                                    try {
+                                        val videoRes = client.newCall(GET(finalLink, headers)).execute()
+                                        val videoHtml = videoRes.body.string()
+                                        val streamUrl = Regex("""href="(https?://[^"]+tok=[^"]+)"""").find(videoHtml)?.groupValues?.get(1)
+                                            ?: Regex(""""(https?://[^"]+/download/[^"]+)"""").find(videoHtml)?.groupValues?.get(1)
+                                        
+                                        if (streamUrl != null) {
+                                            Video(streamUrl, "$quality (Direct)", streamUrl, headers)
+                                        } else {
+                                            Video(finalLink, "$quality (Host Page)", finalLink, headers)
+                                        }
+                                    } catch (e: Exception) {
+                                        Video(finalLink, "$quality (Host Page)", finalLink, headers)
+                                    }
+                                } else {
+                                    Video(finalLink, quality, finalLink, headers)
+                                }
+                            } else {
+                                Video(redirectUrl, "$quality (Portal)", redirectUrl, headers)
+                            }
+                        }
+                    } else {
+                        // Return portal link immediately
+                        Video(redirectUrl, "$quality (Portal)", redirectUrl, headers)
+                    }
+                }
             }
-        }
+        }.awaitAll().filterNotNull()
         
-        return videos.sortedWith(compareByDescending<Video> { it.quality.contains("1080") }
+        videos.sortedWith(compareByDescending<Video> { it.quality.contains("1080") }
             .thenByDescending { it.quality.contains("720") }
+            .thenByDescending { it.quality.contains("Direct") }
+            .thenBy { it.quality.contains("Portal") }
         )
+    }
+
+    private fun fetchFinalLink(url: String): String? {
+        return try {
+            val response = client.newCall(GET(url, headers)).execute()
+            val html = response.body.string()
+            val propsJson = html.substringAfter("window.__PROPS__ = ", "")
+                .substringBefore(";", "")
+            if (propsJson.isEmpty()) return null
+            
+            val props = json.decodeFromString<RedirectProps>(propsJson)
+            val finalLink = "${props.link.domain}${props.link.hidden}"
+            response.close()
+            finalLink
+        } catch (e: Exception) {
+            null
+        }
     }
 
     @Serializable
@@ -168,6 +244,17 @@ class ToonWorld4All : AnimeHttpSource() {
     data class FileItem(
         val host: String,
         val link: String
+    )
+
+    @Serializable
+    data class RedirectProps(
+        val link: RedirectLink
+    )
+
+    @Serializable
+    data class RedirectLink(
+        val domain: String,
+        val hidden: String
     )
 
     override fun animeDetailsRequest(anime: SAnime): Request = GET(anime.url, headers)
