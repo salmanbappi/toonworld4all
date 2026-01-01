@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.animeextension.en.toonworld4all
 
+import android.app.Application
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.SAnime
@@ -26,6 +27,8 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.nodes.Document
+import uy.kohesive.injekt.Injekt
+import uy.kohesive.injekt.api.get
 import uy.kohesive.injekt.injectLazy
 import java.util.concurrent.TimeUnit
 
@@ -58,7 +61,7 @@ class ToonWorld4All : AnimeHttpSource() {
                 maxRequestsPerHost = 15
             }
         )
-        .addInterceptor(CloudflareInterceptor(super.client))
+        .addInterceptor(CloudflareInterceptor(Injekt.get<Application>()))
         .build()
 
     private val json: Json by injectLazy()
@@ -162,11 +165,10 @@ class ToonWorld4All : AnimeHttpSource() {
                     semaphore.withPermit {
                         withTimeoutOrNull(25000) {
                             val redirectUrl = if (fileLink.startsWith("/")) "$archiveUrl$fileLink" else fileLink
-                            val hostUrl = resolveBridgeHops(redirectUrl)
                             
-                            if (hostUrl != null) {
-                                extractVideosFromHost(hostUrl, resolution, hostName)
-                            } else null
+                            val hostUrl = resolveBridgeHops(redirectUrl) ?: return@withTimeoutOrNull null
+                            
+                            deepExtractVideos(hostUrl, resolution, hostName)
                         }
                     }
                 }
@@ -195,14 +197,14 @@ class ToonWorld4All : AnimeHttpSource() {
             val html = response.body.string()
             response.close()
             
-            val dest = Regex("\"destination\":\"([^"]+)\"").find(html)?.groupValues?.get(1)
+            val dest = Regex("\"destination\":\"([^\"]+)\"").find(html)?.groupValues?.get(1)
             dest?.replace("\\/", "/")
         } catch (e: Exception) {
             null
         }
     }
 
-    private fun extractVideosFromHost(hostUrl: String, res: String, hostName: String): List<Video> {
+    private fun deepExtractVideos(hostUrl: String, res: String, hostName: String): List<Video> {
         return try {
             val hostHeaders = headers.newBuilder()
                 .set("Referer", hostUrl.substringBeforeLast("/") + "/")
@@ -212,19 +214,13 @@ class ToonWorld4All : AnimeHttpSource() {
             val html = response.body.string()
             response.close()
 
-            // Regex for tokenized direct links (?tok=)
-            val tokRegex = Regex("href=\"([^"]+tok=[^"]+)\"")
-            val downloadRegex = Regex("\"([^"]+/download/[^"]+)\"")
-            val fileRegex = Regex("file: \"([^"]+)\"")
-
-            val streamUrl = tokRegex.find(html)?.groupValues?.get(1)
-                ?: downloadRegex.find(html)?.groupValues?.get(1)
-                ?: fileRegex.find(html)?.groupValues?.get(1)
+            val streamUrl = Regex("href=\"([^\"]+tok=[^\"]+)\"").find(html)?.groupValues?.get(1)
+                ?: Regex("\"([^\"]+/download/[^\"]+)\"").find(html)?.groupValues?.get(1)
+                ?: Regex("file: \"([^\"]+)\"").find(html)?.groupValues?.get(1)
 
             if (streamUrl != null) {
                 listOf(Video(streamUrl, "$res - $hostName", streamUrl, headers = hostHeaders))
             } else {
-                // Return portal link as absolute fallback if extraction fails
                 listOf(Video(hostUrl, "$res - $hostName (Portal)", hostUrl, headers = hostHeaders))
             }
         } catch (e: Exception) {
