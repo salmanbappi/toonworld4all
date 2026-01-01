@@ -55,7 +55,7 @@ class ToonWorld4All : AnimeHttpSource() {
         .dispatcher(
             Dispatcher().apply {
                 maxRequests = 50
-                maxRequestsPerHost = 10
+                maxRequestsPerHost = 15
             }
         )
         .addInterceptor(CloudflareInterceptor(super.client))
@@ -65,7 +65,7 @@ class ToonWorld4All : AnimeHttpSource() {
 
     private val archiveUrl = "https://archive.toonworld4all.me"
 
-    private val semaphore = Semaphore(3)
+    private val semaphore = Semaphore(5)
 
     override fun headersBuilder() = super.headersBuilder()
         .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
@@ -133,12 +133,15 @@ class ToonWorld4All : AnimeHttpSource() {
         return episodes.reversed()
     }
 
-    // Video Links (Hybrid Strategy)
+    // Video Links (Hardened Production Implementation)
     override suspend fun getVideoList(episode: SEpisode): List<Video> = coroutineScope {
         val response = client.newCall(GET(episode.url, headers)).execute()
         val document = response.asJsoup()
         
-        val scriptContent = document.select("script").html()
+        val scriptContent = document.select("script")
+            .firstOrNull { it.data().contains("window.__PROPS__") } 
+            ?.data() ?: return@coroutineScope emptyList()
+
         val propsJson = scriptContent.substringAfter("window.__PROPS__ = ", "")
             .substringBefore(";", "")
         
@@ -151,70 +154,79 @@ class ToonWorld4All : AnimeHttpSource() {
         }
 
         val videos = props.data.data.encodes.flatMap { encode ->
-            // For each resolution, we try to resolve only the first link to save time
-            // The others are returned as portal links
-            encode.files.mapIndexed { index, file ->
+            encode.files.map { file ->
                 async {
-                    val redirectUrl = if (file.link.startsWith("/")) "$archiveUrl${file.link}" else file.link
-                    val quality = "${encode.resolution} - ${file.host}"
-                    
-                    // Only attempt background resolution for the first 2 links total to keep loading fast
-                    if (index == 0) {
-                        semaphore.withPermit {
-                            val finalLink = withTimeoutOrNull(7000) { fetchFinalLink(redirectUrl) }
-                            if (finalLink != null) {
-                                // Basic extraction for known easy targets
-                                if (finalLink.contains("hubcloud") || finalLink.contains("gdflix")) {
-                                    try {
-                                        val videoRes = client.newCall(GET(finalLink, headers)).execute()
-                                        val videoHtml = videoRes.body.string()
-                                        val streamUrl = Regex("""href="(https?://[^"]+tok=[^"]+)"""").find(videoHtml)?.groupValues?.get(1)
-                                            ?: Regex(""""(https?://[^"]+/download/[^"]+)"""").find(videoHtml)?.groupValues?.get(1)
-                                        
-                                        if (streamUrl != null) {
-                                            Video(streamUrl, "$quality (Direct)", streamUrl, headers)
-                                        } else {
-                                            Video(finalLink, "$quality (Host Page)", finalLink, headers)
-                                        }
-                                    } catch (e: Exception) {
-                                        Video(finalLink, "$quality (Host Page)", finalLink, headers)
-                                    }
-                                } else {
-                                    Video(finalLink, quality, finalLink, headers)
-                                }
-                            } else {
-                                Video(redirectUrl, "$quality (Portal)", redirectUrl, headers)
-                            }
+                    semaphore.withPermit {
+                        withTimeoutOrNull(12000) {
+                            val redirectUrl = if (file.link.startsWith("/")) "$archiveUrl${file.link}" else file.link
+                            val hostUrl = resolveBridgeHops(redirectUrl)
+                            
+                            if (hostUrl != null) {
+                                extractVideosFromHost(hostUrl, encode.resolution, file.host)
+                            } else null
                         }
-                    } else {
-                        // Return portal link immediately
-                        Video(redirectUrl, "$quality (Portal)", redirectUrl, headers)
                     }
                 }
             }
-        }.awaitAll().filterNotNull()
+        }.awaitAll().filterNotNull().flatten()
         
         videos.sortedWith(compareByDescending<Video> { it.quality.contains("1080") }
             .thenByDescending { it.quality.contains("720") }
-            .thenByDescending { it.quality.contains("Direct") }
-            .thenBy { it.quality.contains("Portal") }
         )
     }
 
-    private fun fetchFinalLink(url: String): String? {
+    private fun resolveBridgeHops(url: String): String? {
         return try {
-            val response = client.newCall(GET(url, headers)).execute()
+            val bridgeHeaders = headers.newBuilder()
+                .set("Referer", "$archiveUrl/")
+                .build()
+
+            val response = client.newCall(GET(url, bridgeHeaders)).execute()
+            val finalUrl = response.request.url.toString()
+
+            if (!finalUrl.contains("/redirect/")) {
+                response.close()
+                return finalUrl
+            }
+
             val html = response.body.string()
-            val propsJson = html.substringAfter("window.__PROPS__ = ", "")
-                .substringBefore(";", "")
-            if (propsJson.isEmpty()) return null
-            
-            val props = json.decodeFromString<RedirectProps>(propsJson)
-            val finalLink = "${props.link.domain}${props.link.hidden}"
             response.close()
-            finalLink
+            
+            Regex("\"destination\":\"([^"]+)\"").find(html)?.groupValues?.get(1)
+                ?.replace("\\/", "/")
         } catch (e: Exception) {
             null
+        }
+    }
+
+    private fun extractVideosFromHost(hostUrl: String, res: String, hostName: String): List<Video> {
+        return try {
+            val hostHeaders = headers.newBuilder()
+                .set("Referer", hostUrl.substringBeforeLast("/") + "/")
+                .build()
+
+            val response = client.newCall(GET(hostUrl, hostHeaders)).execute()
+            val html = response.body.string()
+            response.close()
+
+            when {
+                hostUrl.contains("hubcloud") || hostUrl.contains("gdflix") -> {
+                    val streamUrl = Regex("href=\"(https?://[^\"]+tok=[^\" ]+)\"").find(html)?.groupValues?.get(1)
+                        ?: Regex("\"(https?://[^\"]+/download/[^\" ]+)\"").find(html)?.groupValues?.get(1)
+                    
+                    if (streamUrl != null) {
+                        listOf(Video(streamUrl, "$res - $hostName", streamUrl, headers = hostHeaders))
+                    } else {
+                        // Fallback: If we can't find direct link, provide the host page as portal
+                        listOf(Video(hostUrl, "$res - $hostName (Portal)", hostUrl, headers = hostHeaders))
+                    }
+                }
+                else -> {
+                    listOf(Video(hostUrl, "$res - $hostName (Portal)", hostUrl, headers = hostHeaders))
+                }
+            }
+        } catch (e: Exception) {
+            emptyList()
         }
     }
 
