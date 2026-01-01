@@ -154,7 +154,7 @@ class ToonWorld4All : AnimeHttpSource() {
         }
 
         val videos = props.data.data.encodes.flatMap { encode ->
-            encode.files.map {
+            encode.files.map { file ->
                 async {
                     semaphore.withPermit {
                         // Use a generous timeout for deep resolution
@@ -194,7 +194,7 @@ class ToonWorld4All : AnimeHttpSource() {
             val html = response.body.string()
             response.close()
             
-            Regex("\"destination\":\"([^"]+)\"").find(html)?.groupValues?.get(1)
+            Regex("\"destination\":\"([^\"]+)\"").find(html)?.groupValues?.get(1)
                 ?.replace("\\/", "/")
         } catch (e: Exception) {
             null
@@ -213,15 +213,14 @@ class ToonWorld4All : AnimeHttpSource() {
             response.close()
 
             // Look for tokenized direct link or download link
-            val streamUrl = Regex("href=\" (https?://[^" ]+tok=[^" ]+)\"").find(html)?.groupValues?.get(1)
-                ?: Regex("\"(https?://[^" ]+/download/[^" ]+)\"").find(html)?.groupValues?.get(1)
-                ?: Regex("file: \"(https?://[^"]+)\"").find(html)?.groupValues?.get(1)
+            val streamUrl = Regex("""href=\"(https?://[^" ]+tok=[^" ]+)\"""").find(html)?.groupValues?.get(1)
+                ?: Regex("""\"(https?://[^" ]+/download/[^" ]+)\"""").find(html)?.groupValues?.get(1)
+                ?: Regex("""file: \"(https?://[^\"]+)\"""").find(html)?.groupValues?.get(1)
 
             if (streamUrl != null) {
                 listOf(Video(streamUrl, "$res - $hostName", streamUrl, headers = hostHeaders))
             } else {
-                // If it's HubCloud/GDFlix and we didn't find tok=, it might be a multi-audio page
-                // We return the host page as portal so user can use WebView
+                // If we can't find direct link, provide the host page as portal
                 listOf(Video(hostUrl, "$res - $hostName (Portal)", hostUrl, headers = hostHeaders))
             }
         } catch (e: Exception) {
