@@ -195,14 +195,14 @@ class ToonWorld4All : AnimeHttpSource() {
             val html = response.body.string()
             response.close()
             
-            val dest = Regex("\"destination\":\"([^\"]+)\"").find(html)?.groupValues?.get(1)
+            val dest = Regex("\"destination\":\"([^"]+)\"").find(html)?.groupValues?.get(1)
             dest?.replace("\\/", "/")
         } catch (e: Exception) {
             null
         }
     }
 
-    private fun deepExtractVideos(hostUrl: String, res: String, hostName: String): List<Video> {
+    private fun extractVideosFromHost(hostUrl: String, res: String, hostName: String): List<Video> {
         return try {
             val hostHeaders = headers.newBuilder()
                 .set("Referer", hostUrl.substringBeforeLast("/") + "/")
@@ -212,10 +212,10 @@ class ToonWorld4All : AnimeHttpSource() {
             val html = response.body.string()
             response.close()
 
-            // Safe regex strings without triple quotes to avoid parser ambiguity
-            val tokRegex = Regex("href=\"(https?://[^\" ]+tok=[^\" ]+)\"")
-            val downloadRegex = Regex("\"(https?://[^\" ]+/download/[^\" ]+)\"")
-            val fileRegex = Regex("file: \"(https?://[^"]+)\"")
+            // Regex for tokenized direct links (?tok=)
+            val tokRegex = Regex("href=\"([^"]+tok=[^"]+)\"")
+            val downloadRegex = Regex("\"([^"]+/download/[^"]+)\"")
+            val fileRegex = Regex("file: \"([^"]+)\"")
 
             val streamUrl = tokRegex.find(html)?.groupValues?.get(1)
                 ?: downloadRegex.find(html)?.groupValues?.get(1)
@@ -224,16 +224,12 @@ class ToonWorld4All : AnimeHttpSource() {
             if (streamUrl != null) {
                 listOf(Video(streamUrl, "$res - $hostName", streamUrl, headers = hostHeaders))
             } else {
+                // Return portal link as absolute fallback if extraction fails
                 listOf(Video(hostUrl, "$res - $hostName (Portal)", hostUrl, headers = hostHeaders))
             }
         } catch (e: Exception) {
             emptyList()
         }
-    }
-
-    // Helper method name matched to deepExtractVideos fix
-    private fun extractVideosFromHost(hostUrl: String, res: String, hostName: String): List<Video> {
-        return deepExtractVideos(hostUrl, res, hostName)
     }
 
     @Serializable
