@@ -133,13 +133,13 @@ class ToonWorld4All : AnimeHttpSource() {
         return episodes.reversed()
     }
 
-    // Video Links (Deep Link Generation Fix)
+    // Video Links (Production Grade Resolution)
     override suspend fun getVideoList(episode: SEpisode): List<Video> = coroutineScope {
         val response = client.newCall(GET(episode.url, headers)).execute()
         val document = response.asJsoup()
         
         val scriptContent = document.select("script")
-            .firstOrNull { it.data().contains("window.__PROPS__") } 
+            .firstOrNull { it.data().contains("window.__PROPS__") }
             ?.data() ?: return@coroutineScope emptyList()
 
         val propsJson = scriptContent.substringAfter("window.__PROPS__ = ", "")
@@ -157,7 +157,6 @@ class ToonWorld4All : AnimeHttpSource() {
             encode.files.map { file ->
                 async {
                     semaphore.withPermit {
-                        // Use a generous timeout for deep resolution
                         withTimeoutOrNull(25000) {
                             val redirectUrl = if (file.link.startsWith("/")) "$archiveUrl${file.link}" else file.link
                             
@@ -194,7 +193,7 @@ class ToonWorld4All : AnimeHttpSource() {
             val html = response.body.string()
             response.close()
             
-            Regex("\"destination\":\"([^\"]+)\"").find(html)?.groupValues?.get(1)
+            Regex("\"destination\":\"([^"]+)\"").find(html)?.groupValues?.get(1)
                 ?.replace("\\/", "/")
         } catch (e: Exception) {
             null
@@ -207,12 +206,12 @@ class ToonWorld4All : AnimeHttpSource() {
                 .set("Referer", hostUrl.substringBeforeLast("/") + "/")
                 .build()
 
-            // Handshake with host page
+            // Handshake with host page to generate session token
             val response = client.newCall(GET(hostUrl, hostHeaders)).execute()
             val html = response.body.string()
             response.close()
 
-            // Look for tokenized direct link or download link
+            // Regex for tokenized direct links (?tok=)
             val streamUrl = Regex("""href=\"(https?://[^" ]+tok=[^" ]+)\"""").find(html)?.groupValues?.get(1)
                 ?: Regex("""\"(https?://[^" ]+/download/[^" ]+)\"""").find(html)?.groupValues?.get(1)
                 ?: Regex("""file: \"(https?://[^\"]+)\"""").find(html)?.groupValues?.get(1)
@@ -220,7 +219,7 @@ class ToonWorld4All : AnimeHttpSource() {
             if (streamUrl != null) {
                 listOf(Video(streamUrl, "$res - $hostName", streamUrl, headers = hostHeaders))
             } else {
-                // If we can't find direct link, provide the host page as portal
+                // Return portal link as absolute fallback if extraction fails
                 listOf(Video(hostUrl, "$res - $hostName (Portal)", hostUrl, headers = hostHeaders))
             }
         } catch (e: Exception) {
