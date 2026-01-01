@@ -191,7 +191,7 @@ class ToonWorld4All : AnimeHttpSource() {
             val html = response.body.string()
             response.close()
             
-            val dest = Regex("\"destination\":\"([^\"]+)\"").find(html)?.groupValues?.get(1)
+            val dest = Regex("\"destination\":\"([^"]+)\"").find(html)?.groupValues?.get(1)
             dest?.replace("\\/", "/")
         } catch (e: Exception) {
             null
@@ -208,8 +208,8 @@ class ToonWorld4All : AnimeHttpSource() {
             val html = response.body.string()
             response.close()
 
-            val streamUrl = Regex("href=\"(https?://[^" ]+tok=[^" ]+)\"").find(html)?.groupValues?.get(1)
-                ?: Regex("\"(https?://[^" ]+/download/[^" ]+)\"").find(html)?.groupValues?.get(1)
+            val streamUrl = Regex("href=\"(https?://[^\" ]+tok=[^\" ]+)\"").find(html)?.groupValues?.get(1)
+                ?: Regex("\"(https?://[^\" ]+/download/[^\" ]+)\"").find(html)?.groupValues?.get(1)
                 ?: Regex("file: \"(https?://[^\"]+)\"").find(html)?.groupValues?.get(1)
 
             if (streamUrl != null) {
