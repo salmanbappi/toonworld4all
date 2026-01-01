@@ -160,10 +160,8 @@ class ToonWorld4All : AnimeHttpSource() {
                         withTimeoutOrNull(25000) {
                             val redirectUrl = if (file.link.startsWith("/")) "$archiveUrl${file.link}" else file.link
                             
-                            // Step 1: Follow Bridge (V2Links/GPLinks)
                             val hostUrl = resolveBridgeHops(redirectUrl) ?: return@withTimeoutOrNull null
                             
-                            // Step 2: Deep Extraction from Host CDN
                             deepExtractVideos(hostUrl, encode.resolution, file.host)
                         }
                     }
@@ -193,7 +191,7 @@ class ToonWorld4All : AnimeHttpSource() {
             val html = response.body.string()
             response.close()
             
-            Regex("\"destination\":\"([^"]+)\"").find(html)?.groupValues?.get(1)
+            Regex("\"destination\":\"([^\"]+)\"").find(html)?.groupValues?.get(1)
                 ?.replace("\\/", "/")
         } catch (e: Exception) {
             null
@@ -206,20 +204,17 @@ class ToonWorld4All : AnimeHttpSource() {
                 .set("Referer", hostUrl.substringBeforeLast("/") + "/")
                 .build()
 
-            // Handshake with host page to generate session token
             val response = client.newCall(GET(hostUrl, hostHeaders)).execute()
             val html = response.body.string()
             response.close()
 
-            // Regex for tokenized direct links (?tok=)
-            val streamUrl = Regex("""href=\"(https?://[^" ]+tok=[^" ]+)\"""").find(html)?.groupValues?.get(1)
-                ?: Regex("""\"(https?://[^" ]+/download/[^" ]+)\"""").find(html)?.groupValues?.get(1)
-                ?: Regex("""file: \"(https?://[^\"]+)\"""").find(html)?.groupValues?.get(1)
+            val streamUrl = Regex("href=\"(https?://[^" ]+tok=[^" ]+)\"").find(html)?.groupValues?.get(1)
+                ?: Regex("\"(https?://[^"]+/download/[^" ]+)\"").find(html)?.groupValues?.get(1)
+                ?: Regex("file: \"(https?://[^"]+)\"").find(html)?.groupValues?.get(1)
 
             if (streamUrl != null) {
                 listOf(Video(streamUrl, "$res - $hostName", streamUrl, headers = hostHeaders))
             } else {
-                // Return portal link as absolute fallback if extraction fails
                 listOf(Video(hostUrl, "$res - $hostName (Portal)", hostUrl, headers = hostHeaders))
             }
         } catch (e: Exception) {
