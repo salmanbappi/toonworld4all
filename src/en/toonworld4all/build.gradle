@@ -6,7 +6,7 @@ ext {
     author = 'salmanbappi'
     extClass = '.ToonWorld4All'
     baseUrl = 'https://toonworld4all.me'
-    extVersionCode = 1011
+    extVersionCode = 1012
 }
 
 repositories {

@@ -44,8 +44,8 @@ class ToonWorld4All : AnimeHttpSource() {
     override val supportsLatest = true
 
     override val client: OkHttpClient = super.client.newBuilder()
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
         .cookieJar(
             object : CookieJar {
                 private val cookieMap = mutableMapOf<String, List<Cookie>>()
@@ -57,8 +57,8 @@ class ToonWorld4All : AnimeHttpSource() {
         )
         .dispatcher(
             Dispatcher().apply {
-                maxRequests = 50
-                maxRequestsPerHost = 15
+                maxRequests = 60
+                maxRequestsPerHost = 20
             }
         )
         .addInterceptor(CloudflareInterceptor(Injekt.get<Application>()))
@@ -68,7 +68,8 @@ class ToonWorld4All : AnimeHttpSource() {
 
     private val archiveUrl = "https://archive.toonworld4all.me"
 
-    private val semaphore = Semaphore(3)
+    // Increased semaphore for faster resolution on parallel hosts
+    private val semaphore = Semaphore(10)
 
     override fun headersBuilder() = super.headersBuilder()
         .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
@@ -136,13 +137,13 @@ class ToonWorld4All : AnimeHttpSource() {
         return episodes.reversed()
     }
 
-    // Video Links (Production Grade Resolution)
+    // Video Links (High-Performance Smart Resolution)
     override suspend fun getVideoList(episode: SEpisode): List<Video> = coroutineScope {
         val response = client.newCall(GET(episode.url, headers)).execute()
         val document = response.asJsoup()
         
         val scriptContent = document.select("script")
-            .firstOrNull { it.data().contains("window.__PROPS__") }
+            .firstOrNull { it.data().contains("window.__PROPS__") } 
             ?.data() ?: return@coroutineScope emptyList()
 
         val propsJson = scriptContent.substringAfter("window.__PROPS__ = ")
@@ -163,12 +164,18 @@ class ToonWorld4All : AnimeHttpSource() {
                 val fileLink = file.link
                 async {
                     semaphore.withPermit {
-                        withTimeoutOrNull(25000) {
+                        // Tight timeout to prevent slow links from hanging the UI
+                        withTimeoutOrNull(12000) {
                             val redirectUrl = if (fileLink.startsWith("/")) "$archiveUrl$fileLink" else fileLink
-                            
                             val hostUrl = resolveBridgeHops(redirectUrl) ?: return@withTimeoutOrNull null
                             
-                            deepExtractVideos(hostUrl, resolution, hostName)
+                            // Only deep-resolve HubCloud and GDFlix as they provide direct streams
+                            if (hostName.contains("HubCloud", ignoreCase = true) || hostName.contains("GDFlix", ignoreCase = true)) {
+                                deepExtractVideos(hostUrl, resolution, hostName)
+                            } else {
+                                // Return as Portal link for MEGA/Filepress to save time
+                                listOf(Video(hostUrl, "$resolution - $hostName (Portal)", hostUrl, headers))
+                            }
                         }
                     }
                 }
@@ -177,6 +184,7 @@ class ToonWorld4All : AnimeHttpSource() {
         
         videos.sortedWith(compareByDescending<Video> { it.quality.contains("1080") }
             .thenByDescending { it.quality.contains("720") }
+            .thenByDescending { !it.quality.contains("Portal") }
         )
     }
 
@@ -197,8 +205,8 @@ class ToonWorld4All : AnimeHttpSource() {
             val html = response.body.string()
             response.close()
             
-            val dest = Regex("\"destination\":\"([^\"]+)\"").find(html)?.groupValues?.get(1)
-            dest?.replace("\\/", "/")
+            Regex("\"destination\":\"([^"]+)\"").find(html)?.groupValues?.get(1)
+                ?.replace("\\/", "/")
         } catch (e: Exception) {
             null
         }
@@ -214,13 +222,15 @@ class ToonWorld4All : AnimeHttpSource() {
             val html = response.body.string()
             response.close()
 
-            val streamUrl = Regex("href=\"([^\"]+tok=[^\"]+)\"").find(html)?.groupValues?.get(1)
-                ?: Regex("\"([^\"]+/download/[^\"]+)\"").find(html)?.groupValues?.get(1)
-                ?: Regex("file: \"([^\"]+)\"").find(html)?.groupValues?.get(1)
+            // Improved regex for tokenized direct links
+            val streamUrl = Regex("""href=\"([^\"]+tok=[^\"]+)\"""").find(html)?.groupValues?.get(1)
+                ?: Regex("""file:\s*\"([^\"]+)\"""").find(html)?.groupValues?.get(1)
+                ?: Regex("""window.location.href\s*=\s*\"([^\"]+)\"""").find(html)?.groupValues?.get(1)
 
-            if (streamUrl != null) {
+            if (streamUrl != null && !streamUrl.contains("/video/") && !streamUrl.contains("/file/")) {
                 listOf(Video(streamUrl, "$res - $hostName", streamUrl, headers = hostHeaders))
             } else {
+                // If deep resolution fails, return Host Page as Portal
                 listOf(Video(hostUrl, "$res - $hostName (Portal)", hostUrl, headers = hostHeaders))
             }
         } catch (e: Exception) {
