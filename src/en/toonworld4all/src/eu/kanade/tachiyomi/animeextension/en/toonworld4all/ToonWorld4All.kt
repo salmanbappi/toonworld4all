@@ -154,15 +154,19 @@ class ToonWorld4All : AnimeHttpSource() {
         }
 
         val videos = props.data.data.encodes.flatMap { encode ->
+            val resolution = encode.resolution
             encode.files.map { file ->
+                val hostName = file.host
+                val fileLink = file.link
                 async {
                     semaphore.withPermit {
                         withTimeoutOrNull(25000) {
-                            val redirectUrl = if (file.link.startsWith("/")) "$archiveUrl${file.link}" else file.link
+                            val redirectUrl = if (fileLink.startsWith("/")) "$archiveUrl$fileLink" else fileLink
+                            val hostUrl = resolveBridgeHops(redirectUrl)
                             
-                            val hostUrl = resolveBridgeHops(redirectUrl) ?: return@withTimeoutOrNull null
-                            
-                            deepExtractVideos(hostUrl, encode.resolution, file.host)
+                            if (hostUrl != null) {
+                                extractVideosFromHost(hostUrl, resolution, hostName)
+                            } else null
                         }
                     }
                 }
@@ -191,7 +195,7 @@ class ToonWorld4All : AnimeHttpSource() {
             val html = response.body.string()
             response.close()
             
-            val dest = Regex("\"destination\":\"([^"]+)\"").find(html)?.groupValues?.get(1)
+            val dest = Regex("\"destination\":\"([^\"]+)\"").find(html)?.groupValues?.get(1)
             dest?.replace("\\/", "/")
         } catch (e: Exception) {
             null
@@ -208,9 +212,14 @@ class ToonWorld4All : AnimeHttpSource() {
             val html = response.body.string()
             response.close()
 
-            val streamUrl = Regex("href=\"(https?://[^\" ]+tok=[^\" ]+)\"").find(html)?.groupValues?.get(1)
-                ?: Regex("\"(https?://[^\" ]+/download/[^\" ]+)\"").find(html)?.groupValues?.get(1)
-                ?: Regex("file: \"(https?://[^\"]+)\"").find(html)?.groupValues?.get(1)
+            // Safe regex strings without triple quotes to avoid parser ambiguity
+            val tokRegex = Regex("href=\"(https?://[^\" ]+tok=[^\" ]+)\"")
+            val downloadRegex = Regex("\"(https?://[^\" ]+/download/[^\" ]+)\"")
+            val fileRegex = Regex("file: \"(https?://[^"]+)\"")
+
+            val streamUrl = tokRegex.find(html)?.groupValues?.get(1)
+                ?: downloadRegex.find(html)?.groupValues?.get(1)
+                ?: fileRegex.find(html)?.groupValues?.get(1)
 
             if (streamUrl != null) {
                 listOf(Video(streamUrl, "$res - $hostName", streamUrl, headers = hostHeaders))
@@ -220,6 +229,11 @@ class ToonWorld4All : AnimeHttpSource() {
         } catch (e: Exception) {
             emptyList()
         }
+    }
+
+    // Helper method name matched to deepExtractVideos fix
+    private fun extractVideosFromHost(hostUrl: String, res: String, hostName: String): List<Video> {
+        return deepExtractVideos(hostUrl, res, hostName)
     }
 
     @Serializable
