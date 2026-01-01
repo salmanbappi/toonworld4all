@@ -142,8 +142,8 @@ class ToonWorld4All : AnimeHttpSource() {
             .firstOrNull { it.data().contains("window.__PROPS__") }
             ?.data() ?: return@coroutineScope emptyList()
 
-        val propsJson = scriptContent.substringAfter("window.__PROPS__ = ", "")
-            .substringBefore(";", "")
+        val propsJson = scriptContent.substringAfter("window.__PROPS__ = ")
+            .substringBefore(";")
         
         if (propsJson.isEmpty()) return@coroutineScope emptyList()
         
