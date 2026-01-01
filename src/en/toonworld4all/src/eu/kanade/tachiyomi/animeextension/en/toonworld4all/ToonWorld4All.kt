@@ -142,8 +142,8 @@ class ToonWorld4All : AnimeHttpSource() {
             .firstOrNull { it.data().contains("window.__PROPS__") }
             ?.data() ?: return@coroutineScope emptyList()
 
-        val propsJson = scriptContent.substringAfter("window.__PROPS__ = ", "")
-            .substringBefore(";", "")
+        val propsJson = scriptContent.substringAfter("window.__PROPS__ = ")
+            .substringBefore(";")
         
         if (propsJson.isEmpty()) return@coroutineScope emptyList()
         
@@ -191,8 +191,8 @@ class ToonWorld4All : AnimeHttpSource() {
             val html = response.body.string()
             response.close()
             
-            Regex("\"destination\":\"([^\"]+)\"").find(html)?.groupValues?.get(1)
-                ?.replace("\\/", "/")
+            val dest = Regex("\"destination\":\"([^"]+)\"").find(html)?.groupValues?.get(1)
+            dest?.replace("\\/", "/")
         } catch (e: Exception) {
             null
         }
@@ -209,8 +209,8 @@ class ToonWorld4All : AnimeHttpSource() {
             response.close()
 
             val streamUrl = Regex("href=\"(https?://[^" ]+tok=[^" ]+)\"").find(html)?.groupValues?.get(1)
-                ?: Regex("\"(https?://[^"]+/download/[^" ]+)\"").find(html)?.groupValues?.get(1)
-                ?: Regex("file: \"(https?://[^"]+)\"").find(html)?.groupValues?.get(1)
+                ?: Regex("\"(https?://[^" ]+/download/[^" ]+)\"").find(html)?.groupValues?.get(1)
+                ?: Regex("file: \"(https?://[^\"]+)\"").find(html)?.groupValues?.get(1)
 
             if (streamUrl != null) {
                 listOf(Video(streamUrl, "$res - $hostName", streamUrl, headers = hostHeaders))
