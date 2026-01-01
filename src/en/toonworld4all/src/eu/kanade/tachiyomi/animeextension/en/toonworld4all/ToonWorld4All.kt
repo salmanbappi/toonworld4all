@@ -41,8 +41,8 @@ class ToonWorld4All : AnimeHttpSource() {
     override val supportsLatest = true
 
     override val client: OkHttpClient = super.client.newBuilder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
         .cookieJar(
             object : CookieJar {
                 private val cookieMap = mutableMapOf<String, List<Cookie>>()
@@ -65,7 +65,7 @@ class ToonWorld4All : AnimeHttpSource() {
 
     private val archiveUrl = "https://archive.toonworld4all.me"
 
-    private val semaphore = Semaphore(5)
+    private val semaphore = Semaphore(3)
 
     override fun headersBuilder() = super.headersBuilder()
         .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
@@ -133,13 +133,13 @@ class ToonWorld4All : AnimeHttpSource() {
         return episodes.reversed()
     }
 
-    // Video Links (Hardened Production Implementation)
+    // Video Links (Deep Link Generation Fix)
     override suspend fun getVideoList(episode: SEpisode): List<Video> = coroutineScope {
         val response = client.newCall(GET(episode.url, headers)).execute()
         val document = response.asJsoup()
         
         val scriptContent = document.select("script")
-            .firstOrNull { it.data().contains("window.__PROPS__") }
+            .firstOrNull { it.data().contains("window.__PROPS__") } 
             ?.data() ?: return@coroutineScope emptyList()
 
         val propsJson = scriptContent.substringAfter("window.__PROPS__ = ", "")
@@ -154,16 +154,18 @@ class ToonWorld4All : AnimeHttpSource() {
         }
 
         val videos = props.data.data.encodes.flatMap { encode ->
-            encode.files.map { file ->
+            encode.files.map {
                 async {
                     semaphore.withPermit {
-                        withTimeoutOrNull(15000) {
+                        // Use a generous timeout for deep resolution
+                        withTimeoutOrNull(25000) {
                             val redirectUrl = if (file.link.startsWith("/")) "$archiveUrl${file.link}" else file.link
-                            val hostUrl = resolveBridgeHops(redirectUrl)
                             
-                            if (hostUrl != null) {
-                                extractVideosFromHost(hostUrl, encode.resolution, file.host)
-                            } else null
+                            // Step 1: Follow Bridge (V2Links/GPLinks)
+                            val hostUrl = resolveBridgeHops(redirectUrl) ?: return@withTimeoutOrNull null
+                            
+                            // Step 2: Deep Extraction from Host CDN
+                            deepExtractVideos(hostUrl, encode.resolution, file.host)
                         }
                     }
                 }
@@ -192,38 +194,35 @@ class ToonWorld4All : AnimeHttpSource() {
             val html = response.body.string()
             response.close()
             
-            Regex("\"destination\":\"([^\"]+)\"").find(html)?.groupValues?.get(1)
+            Regex("\"destination\":\"([^"]+)\"").find(html)?.groupValues?.get(1)
                 ?.replace("\\/", "/")
         } catch (e: Exception) {
             null
         }
     }
 
-    private fun extractVideosFromHost(hostUrl: String, res: String, hostName: String): List<Video> {
+    private fun deepExtractVideos(hostUrl: String, res: String, hostName: String): List<Video> {
         return try {
             val hostHeaders = headers.newBuilder()
                 .set("Referer", hostUrl.substringBeforeLast("/") + "/")
                 .build()
 
+            // Handshake with host page
             val response = client.newCall(GET(hostUrl, hostHeaders)).execute()
             val html = response.body.string()
             response.close()
 
-            when {
-                hostUrl.contains("hubcloud") || hostUrl.contains("gdflix") -> {
-                    val streamUrl = Regex("href=\" (https?://[^\" ]+tok=[^\" ]+)\"").find(html)?.groupValues?.get(1)
-                        ?: Regex("\"(https?://[^\" ]+/download/[^\" ]+)\"").find(html)?.groupValues?.get(1)
-                    
-                    if (streamUrl != null) {
-                        listOf(Video(streamUrl, "$res - $hostName", streamUrl, headers = hostHeaders))
-                    } else {
-                        // Fallback: If we can't find direct link, provide the host page as portal
-                        listOf(Video(hostUrl, "$res - $hostName (Portal)", hostUrl, headers = hostHeaders))
-                    }
-                }
-                else -> {
-                    listOf(Video(hostUrl, "$res - $hostName (Portal)", hostUrl, headers = hostHeaders))
-                }
+            // Look for tokenized direct link or download link
+            val streamUrl = Regex("href=\" (https?://[^" ]+tok=[^" ]+)\"").find(html)?.groupValues?.get(1)
+                ?: Regex("\"(https?://[^" ]+/download/[^" ]+)\"").find(html)?.groupValues?.get(1)
+                ?: Regex("file: \"(https?://[^"]+)\"").find(html)?.groupValues?.get(1)
+
+            if (streamUrl != null) {
+                listOf(Video(streamUrl, "$res - $hostName", streamUrl, headers = hostHeaders))
+            } else {
+                // If it's HubCloud/GDFlix and we didn't find tok=, it might be a multi-audio page
+                // We return the host page as portal so user can use WebView
+                listOf(Video(hostUrl, "$res - $hostName (Portal)", hostUrl, headers = hostHeaders))
             }
         } catch (e: Exception) {
             emptyList()
