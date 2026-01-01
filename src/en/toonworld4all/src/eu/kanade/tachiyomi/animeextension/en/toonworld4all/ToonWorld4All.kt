@@ -139,7 +139,7 @@ class ToonWorld4All : AnimeHttpSource() {
         val document = response.asJsoup()
         
         val scriptContent = document.select("script")
-            .firstOrNull { it.data().contains("window.__PROPS__") } 
+            .firstOrNull { it.data().contains("window.__PROPS__") }
             ?.data() ?: return@coroutineScope emptyList()
 
         val propsJson = scriptContent.substringAfter("window.__PROPS__ = ", "")
@@ -157,7 +157,7 @@ class ToonWorld4All : AnimeHttpSource() {
             encode.files.map { file ->
                 async {
                     semaphore.withPermit {
-                        withTimeoutOrNull(12000) {
+                        withTimeoutOrNull(15000) {
                             val redirectUrl = if (file.link.startsWith("/")) "$archiveUrl${file.link}" else file.link
                             val hostUrl = resolveBridgeHops(redirectUrl)
                             
@@ -192,7 +192,7 @@ class ToonWorld4All : AnimeHttpSource() {
             val html = response.body.string()
             response.close()
             
-            Regex("\"destination\":\"([^"]+)\"").find(html)?.groupValues?.get(1)
+            Regex("\"destination\":\"([^\"]+)\"").find(html)?.groupValues?.get(1)
                 ?.replace("\\/", "/")
         } catch (e: Exception) {
             null
@@ -211,8 +211,8 @@ class ToonWorld4All : AnimeHttpSource() {
 
             when {
                 hostUrl.contains("hubcloud") || hostUrl.contains("gdflix") -> {
-                    val streamUrl = Regex("href=\"(https?://[^\"]+tok=[^\" ]+)\"").find(html)?.groupValues?.get(1)
-                        ?: Regex("\"(https?://[^\"]+/download/[^\" ]+)\"").find(html)?.groupValues?.get(1)
+                    val streamUrl = Regex("href=\" (https?://[^\" ]+tok=[^\" ]+)\"").find(html)?.groupValues?.get(1)
+                        ?: Regex("\"(https?://[^\" ]+/download/[^\" ]+)\"").find(html)?.groupValues?.get(1)
                     
                     if (streamUrl != null) {
                         listOf(Video(streamUrl, "$res - $hostName", streamUrl, headers = hostHeaders))
